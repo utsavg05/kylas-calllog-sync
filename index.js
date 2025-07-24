@@ -671,6 +671,266 @@
 
 
 
+// import express from "express";
+// import axios from "axios";
+// import fs from "fs";
+// import dotenv from "dotenv";
+
+// dotenv.config();
+// const app = express();
+// app.use(express.json());
+
+// const IVR_API = "https://api.ivrsolutions.in/v1/call_logs";
+// const KYLAS_BASE = "https://api.kylas.io/v1";
+// const DELAY = (ms) => new Promise((res) => setTimeout(res, ms));
+// const LAST_RECORD_FILE = "./lastRecord.json";
+
+// /* -------------------- Helpers -------------------- */
+
+// // Fetch token from DB or env (for now using env)
+// function getAccessToken() {
+//   return process.env.KYLAS_ACCESS_TOKEN; // Replace with DB logic for per-account tokens
+// }
+
+// // Read last processed recordId from file
+// function getLastRecordId() {
+//   try {
+//     if (fs.existsSync(LAST_RECORD_FILE)) {
+//       const data = JSON.parse(fs.readFileSync(LAST_RECORD_FILE, "utf8"));
+//       return data.lastRecordId || null;
+//     }
+//   } catch (e) {
+//     console.error("⚠️ Could not read lastRecordId file:", e.message);
+//   }
+//   return null;
+// }
+
+// // Save last processed recordId
+// function saveLastRecordId(recordId) {
+//   try {
+//     fs.writeFileSync(
+//       LAST_RECORD_FILE,
+//       JSON.stringify({ lastRecordId: recordId }, null, 2)
+//     );
+//     console.log(`💾 Saved lastRecordId: ${recordId}`);
+//   } catch (e) {
+//     console.error("⚠️ Failed to write lastRecordId file:", e.message);
+//   }
+// }
+
+// // Normalize a raw phone string from IVR into +91XXXXXXXXXX
+// function normalizePhone(raw) {
+//   if (!raw) return null;
+//   let num = String(raw).trim();
+
+//   if (num.startsWith("+")) {
+//     num = "+" + num.replace(/[^\d]/g, "").replace(/^\+?/, "");
+//   } else {
+//     num = num.replace(/\D/g, "");
+//   }
+//   num = num.replace(/^0+/, "");
+
+//   if (num.startsWith("91") && num.length === 12) {
+//     num = "+" + num;
+//   } else if (num.length === 10) {
+//     num = "+91" + num;
+//   }
+
+//   if (!/^\+91\d{10}$/.test(num)) {
+//     return null;
+//   }
+//   return num;
+// }
+
+// /* -------------------- Route -------------------- */
+
+// app.get("/fetch-logs", async (req, res) => {
+//   const fullSync = req.query.fullSync === "true";
+
+//   try {
+//     console.log("🔍 Fetching call logs from IVR...");
+//     const ivrRes = await axios.get(IVR_API, {
+//       headers: { Authorization: `Bearer ${process.env.IVR_TOKEN}` },
+//     });
+
+//     const data = ivrRes.data?.data || [];
+//     const length = data.length;
+//     console.log(`✅ Total logs fetched: ${length}`);
+
+//     if (length === 0) {
+//       return res.status(200).json({ message: "No logs found", count: 0 });
+//     }
+
+//     let startIndex = length - 1;
+//     const lastRecordId = getLastRecordId();
+
+//     if (!fullSync && lastRecordId) {
+//       for (let i = length - 1; i >= 0; i--) {
+//         if (data[i].recordid === lastRecordId) {
+//           startIndex = i - 1;
+//           break;
+//         }
+//       }
+//     } else if (fullSync) {
+//       console.log("⚠️ Running FULL SYNC (ignoring lastRecordId).");
+//     }
+
+//     if (startIndex < 0) {
+//       console.log("✅ No new logs since last sync.");
+//       return res.status(200).json({
+//         message: "No new logs to sync",
+//         lastRecordId,
+//         count: 0,
+//       });
+//     }
+
+//     const newLogsCount = startIndex + 1;
+//     console.log(`✅ Found ${newLogsCount} new logs to sync.`);
+//     console.log(`Starting sync from index: ${startIndex}`);
+
+//     const finalResponse = [];
+//     const groupedData = {};
+//     const accessToken = getAccessToken();
+
+//     for (let processed = 0; processed < newLogsCount; processed++) {
+//       const i = startIndex - processed;
+//       const log = data[i];
+//       const rawPhone = log.client_no;
+//       const phone = normalizePhone(rawPhone);
+
+//       console.log(
+//         `📞 Processing ${processed + 1}/${newLogsCount}: raw=${rawPhone} | normalized=${phone}`
+//       );
+
+//       if (!phone) {
+//         console.log(`⚠️ Skipping invalid/un-normalizable number: ${rawPhone}`);
+//         continue;
+//       }
+
+//       if (!groupedData[phone]) groupedData[phone] = 0;
+//       groupedData[phone]++;
+
+//       try {
+//         // Search for lead
+//         const searchRes = await axios.post(
+//           `${KYLAS_BASE}/search/lead?sort=updatedAt,desc&page=0&size=100`,
+//           {
+//             fields: ["id", "firstName", "lastName", "phoneNumbers"],
+//             jsonRule: {
+//               rules: [
+//                 {
+//                   id: "multi_field",
+//                   field: "multi_field",
+//                   type: "multi_field",
+//                   input: "multi_field",
+//                   operator: "multi_field",
+//                   value: phone,
+//                 },
+//               ],
+//               condition: "AND",
+//               valid: true,
+//             },
+//           },
+//           {
+//             headers: {
+//               Authorization: `Bearer ${accessToken}`,
+//               "Content-Type": "application/json",
+//             },
+//           }
+//         );
+
+//         let leadId;
+//         const leads = searchRes.data?.content || [];
+//         if (leads.length > 0) {
+//           leadId = leads[0].id;
+//           console.log(`✅ Existing Lead found: ${phone} => ID ${leadId}`);
+//         } else {
+//           // Create lead
+//           const leadRes = await axios.post(
+//             `${KYLAS_BASE}/leads`,
+//             {
+//               firstName: "Lead",
+//               lastName: "From IVR",
+//               phoneNumbers: [{ type: "MOBILE", value: phone }],
+//             },
+//             {
+//               headers: {
+//                 Authorization: `Bearer ${accessToken}`,
+//                 "Content-Type": "application/json",
+//               },
+//             }
+//           );
+//           leadId = leadRes.data.id;
+//           console.log(`➕ Created new lead for ${phone}: ID ${leadId}`);
+//         }
+
+//         const callLogPayload = {
+//           outcome: "connected",
+//           startTime: new Date(log.call_time).toISOString(),
+//           phoneNumber: phone,
+//           callType: log.call_type === "incoming" ? "incoming" : "outgoing",
+//           duration: log.call_duration,
+//           notes: [{ description: `Record ID: ${log.recordid}` }],
+//           relatedTo: {
+//             id: leadId,
+//             entity: "lead",
+//             phoneNumber: phone,
+//           },
+//           callRecording: log.audio_url
+//             ? { url: log.audio_url, fileName: `call_${log.recordid}.mp3` }
+//             : undefined,
+//         };
+
+//         await axios.post(`${KYLAS_BASE}/call-logs`, callLogPayload, {
+//           headers: {
+//             Authorization: `Bearer ${accessToken}`,
+//             "Content-Type": "application/json",
+//           },
+//         });
+
+//         console.log(`📞 Call log posted: ${phone}`);
+//         finalResponse.push({ phone, leadId, status: "Synced" });
+//       } catch (err) {
+//         const msg =
+//           err.response?.data?.message ||
+//           err.response?.data ||
+//           err.message ||
+//           "Unknown error";
+//         console.error(`❌ Lead search/create or log post failed for ${rawPhone}:`, msg);
+//         finalResponse.push({ phone: rawPhone, status: "Failed", error: msg });
+//       }
+
+//       await DELAY(3000);
+//     }
+
+//     saveLastRecordId(data[0].recordid);
+
+//     const summary = Object.keys(groupedData).map((p) => ({
+//       phone: p,
+//       logsProcessed: groupedData[p],
+//     }));
+
+//     res.status(200).json({
+//       message: "Call logs synced to Kylas",
+//       totalLogsProcessed: finalResponse.length,
+//       uniqueNumbersProcessed: Object.keys(groupedData).length,
+//       groupedSummary: summary,
+//       lastRecordId: data[0].recordid,
+//       fullSync,
+//     });
+//   } catch (error) {
+//     console.error("❌ Fatal error:", error.message);
+//     res.status(500).json({ error: error.message });
+//   }
+// });
+
+// app.listen(3001, () => console.log("🚀 Server running at http://localhost:3001"));
+
+
+
+
+
+
 import express from "express";
 import axios from "axios";
 import fs from "fs";
@@ -686,6 +946,11 @@ const DELAY = (ms) => new Promise((res) => setTimeout(res, ms));
 const LAST_RECORD_FILE = "./lastRecord.json";
 
 /* -------------------- Helpers -------------------- */
+
+// Fetch token from DB or env (for now using env)
+function getAccessToken() {
+  return process.env.KYLAS_ACCESS_TOKEN; // Replace with DB logic for per-account tokens
+}
 
 // Read last processed recordId from file
 function getLastRecordId() {
@@ -716,36 +981,21 @@ function saveLastRecordId(recordId) {
 // Normalize a raw phone string from IVR into +91XXXXXXXXXX
 function normalizePhone(raw) {
   if (!raw) return null;
-
   let num = String(raw).trim();
 
-  // If includes non-digits and +, keep +, strip others
-  // First handle leading +91 properly
   if (num.startsWith("+")) {
-    // strip everything except + and digits
     num = "+" + num.replace(/[^\d]/g, "").replace(/^\+?/, "");
   } else {
-    // strip all non-digits
     num = num.replace(/\D/g, "");
   }
-
-  // Drop leading zeros
   num = num.replace(/^0+/, "");
 
-  // If now starts with 91 and length 12, prepend '+'
   if (num.startsWith("91") && num.length === 12) {
     num = "+" + num;
-  }
-  // If plain 10-digit, assume India and prefix +91
-  else if (num.length === 10) {
+  } else if (num.length === 10) {
     num = "+91" + num;
   }
-  // If already +91 and 13 chars, leave
-  else if (num.startsWith("+91") && num.length === 13) {
-    // ok
-  }
 
-  // Final sanity check: must match +91 + 10 digits
   if (!/^\+91\d{10}$/.test(num)) {
     return null;
   }
@@ -771,14 +1021,13 @@ app.get("/fetch-logs", async (req, res) => {
       return res.status(200).json({ message: "No logs found", count: 0 });
     }
 
-    // Determine start index (where to stop going backwards)
     let startIndex = length - 1;
     const lastRecordId = getLastRecordId();
 
     if (!fullSync && lastRecordId) {
       for (let i = length - 1; i >= 0; i--) {
         if (data[i].recordid === lastRecordId) {
-          startIndex = i - 1; // start from *before* the previously synced record
+          startIndex = i - 1;
           break;
         }
       }
@@ -795,19 +1044,18 @@ app.get("/fetch-logs", async (req, res) => {
       });
     }
 
-    const newLogsCount = startIndex + 1; // number of logs to process
+    const newLogsCount = startIndex + 1;
     console.log(`✅ Found ${newLogsCount} new logs to sync.`);
     console.log(`Starting sync from index: ${startIndex}`);
 
     const finalResponse = [];
     const groupedData = {};
+    const accessToken = getAccessToken();
 
     for (let processed = 0; processed < newLogsCount; processed++) {
       const i = startIndex - processed;
       const log = data[i];
       const rawPhone = log.client_no;
-
-      // Normalize
       const phone = normalizePhone(rawPhone);
 
       console.log(
@@ -819,7 +1067,6 @@ app.get("/fetch-logs", async (req, res) => {
         continue;
       }
 
-      // Track grouping
       if (!groupedData[phone]) groupedData[phone] = 0;
       groupedData[phone]++;
 
@@ -846,7 +1093,7 @@ app.get("/fetch-logs", async (req, res) => {
           },
           {
             headers: {
-              "api-key": process.env.KYLAS_API_KEY,
+              Authorization: `Bearer ${accessToken}`,
               "Content-Type": "application/json",
             },
           }
@@ -868,7 +1115,7 @@ app.get("/fetch-logs", async (req, res) => {
             },
             {
               headers: {
-                "api-key": process.env.KYLAS_API_KEY,
+                Authorization: `Bearer ${accessToken}`,
                 "Content-Type": "application/json",
               },
             }
@@ -877,7 +1124,6 @@ app.get("/fetch-logs", async (req, res) => {
           console.log(`➕ Created new lead for ${phone}: ID ${leadId}`);
         }
 
-        // Build call log payload
         const callLogPayload = {
           outcome: "connected",
           startTime: new Date(log.call_time).toISOString(),
@@ -897,7 +1143,7 @@ app.get("/fetch-logs", async (req, res) => {
 
         await axios.post(`${KYLAS_BASE}/call-logs`, callLogPayload, {
           headers: {
-            "api-key": process.env.KYLAS_API_KEY,
+            Authorization: `Bearer ${accessToken}`,
             "Content-Type": "application/json",
           },
         });
@@ -914,14 +1160,11 @@ app.get("/fetch-logs", async (req, res) => {
         finalResponse.push({ phone: rawPhone, status: "Failed", error: msg });
       }
 
-      // Delay to avoid rate limits
-      await DELAY(4000);
+      await DELAY(3000);
     }
 
-    // Save latest recordId for next run (always from newest item)
     saveLastRecordId(data[0].recordid);
 
-    // Build summary
     const summary = Object.keys(groupedData).map((p) => ({
       phone: p,
       logsProcessed: groupedData[p],
@@ -942,6 +1185,3 @@ app.get("/fetch-logs", async (req, res) => {
 });
 
 app.listen(3001, () => console.log("🚀 Server running at http://localhost:3001"));
-
-
-
